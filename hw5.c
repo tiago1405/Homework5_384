@@ -8,13 +8,14 @@
 #include <libgen.h>
 #include <errno.h>
 #include <linux/limits.h>
+#include <errno.h>
 #include <time.h>
 
 int main (int argc, char* argv[])
 {
 	bool opt_h, opt_d, opt_m, opt_t;									//Creating variables and initialzing them
-	time_t time;
-	//struct tm *loctime;  
+	time_t rawtime;
+	int saved_errno;
 	opt_h = false;	opt_m = false;
 	opt_d = false;	opt_t = false;
 	char* direc = NULL;
@@ -46,7 +47,7 @@ int main (int argc, char* argv[])
 	}
 
 	int filed = inotify_init();											// Creating filed descriptor
-	int fwatch = inotify_add_watch(filed, path, IN_MODIFY | IN_ACCESS);	// Creting file watcher to monitor changes
+	int fwatch = inotify_add_watch(filed, path, IN_MODIFY);				// Creting file watcher to monitor changes
 	//Check for any errors with the above calls
 	int revcount = 0;													// Counter for rev
 	while(1)
@@ -54,41 +55,50 @@ int main (int argc, char* argv[])
 		ssize_t length = (5120);										// 5kb size
 		char buf[length];
 		int reader = read(filed, buf, length);
-		// Check for read errors
-		char* i;
+		if(read < 0)
+		{
+			perror("Error at reader: ");
+			return -1;
+		}
+		char* i;	
 
 		for(i = buf; i < buf + reader;)									// Keep reading
 		{
 			struct inotify_event* event = (struct inotify_event*)i;		//	Creating event notifier
-			//Check for errors here
+			if(event < 0)
+			{
+				perror("Event ERROR: ");
+				return -1;
+			}
 			if((event->mask) == 2)										// If the file was modified
 			{
-				printf("The file was modified\n");
-				//	/*
 				char fbpath[1000];											// Full backup path
 
 				if(opt_t)												//Add time to file name
 				{
-					struct tm *timestr;
 					char timebuf[100];
-					//time = time (NULL);
-					timestr = localtime(&time);
+					char fileN[100];
+					char* pathd = strdup(path);
+					char* basen = basename(pathd);
 
-					snprintf(timebuf, 100, "%d_%d_%d_%d_%d",
-							(timestr->tm_mday),(timestr->tm_mon),
-							(timestr->tm_hour),(timestr->tm_min),
-							(timestr->tm_sec));
-					
+					struct tm *timestr;
+					time(&rawtime);
+					timestr = localtime(&rawtime);
 
+					snprintf(timebuf, 100, "%d%d%d%d%d%d",
+							(int)((timestr->tm_year)+1900),(timestr->tm_mday),
+							(timestr->tm_mon),(timestr->tm_hour),
+							(timestr->tm_min), (timestr->tm_sec));
+					snprintf(fileN, 100,"%s",basen);
+					strcpy(fbpath, bpath);
+					strcat(fbpath, fileN);	strcat(fbpath, timebuf);
 				}
 				else													//Add whatever rev the counter is at
 				{
-					printf("In Else statement\n");
 					char fileN[100];
-					char* pathd;
-					char* basen;
-					pathd = strdup(path);
-					basen = basename(pathd); 
+					char* pathd = strdup(path);
+					char* basen = basename(pathd);
+
 					printf("%s\n", basen);	
 					snprintf(fileN, 100,"%s",basen);
 					char rev[100];
@@ -97,38 +107,73 @@ int main (int argc, char* argv[])
 					strcat(fbpath, fileN); strcat(fbpath, rev);			// Concatenating rev to file name in fbpath
 				}
 
-				printf("File was named\n");
 				int orgf=0,bacf=0;										// Original and Backup File
-				printf("Opening orgf");
 				orgf = open(path, O_RDONLY);							// Open the original file as read only
-				//Check Error when opening
-				printf("orgf open");
-				printf("Opening bacf");
-				bacf = open(fbpath, O_WRONLY | O_CREAT | O_EXCL);		// Create and Open the Backup File
-				//Check Error when opening
-				printf("bacf open");
-				char* output = buf;
-				printf("%s",(event->name));
-				ssize_t write2f;										// Write to file
-				ssize_t readf = read(orgf, buf, length);				// read file to copy
-				while(readf > 0)										// While there is more to read
+				if(orgf < 0)
 				{
-				 	write2f = write(bacf, output, reader);
-				 	readf -= write2f;									// Subtract what we read from what we wrote
-				 	output += write2f;									// Write to the ouput buffer
+					perror("ERROR opening original file: ");
+					return -1;
 				}
-				close(orgf);
-				// Check for errors closing
-				close(bacf);
-				// Check for errors closing
+				printf("%s\n", fbpath);
+				bacf = open(fbpath, O_WRONLY | O_CREAT | O_EXCL);	// Create and Open the Backup File
+				if(bacf < 0)
+				{
+					perror("ERROR opening backup file: ");
+					return -1;
+				}
+
+				char* output = buf;
+				ssize_t write2f;									// Write to file
+				ssize_t readf = read(orgf, buf, length);			// read file to copy
+				if(readf <= 0)
+				{
+					perror("Readf ERROR");
+				}
+					///*
+				while(readf > 0)									// While there is more to read
+				{
+					write2f = write(bacf, output, reader);
+					if (write2f <= 0)
+					{
+						perror("Write2f ERROR");
+						return -1;
+					}
+
+				 	if(write2f >= 0)
+				 	{
+				 		printf("In IF statement\n");
+					 	readf -= write2f;								// Subtract what we read from what we wrote
+					 	output += write2f;								// Write to the ouput buffer
+						printf("Output: %s\n", output);
+					}
+					if(write2f <= -1)
+					{
+						perror("Error in writing to file");
+						return -1;
+					}
+				}
+				//*/
+				if (close(orgf) < 0)
+				{
+					perror("Error closing Original File");
+					return -1;
+				}
+				else	close(orgf);
+
+				if (close(bacf) < 0)
+				{
+					perror("Error closing Backup File");
+					return -1;
+				}
+				else	close(bacf);;
+
 				//	*/
 
 				revcount++;
 				i += sizeof(struct inotify_event) + event->len;
 			}
-
+			//printf("Out of if-changed statement\n");
 		}
 	}
-
 	return EXIT_SUCCESS;
 }
